@@ -1,0 +1,26 @@
+# Python & Virtual Environments 
+__pycache__/ 
+*.py[cod] 
+.venv/ 
+venv/ 
+*.egg-info/ 
+
+# Tox & Testing 
+.tox/ 
+.pytest_cache/ 
+.coverage 
+htmlcov/ 
+
+# Rockcraft & Charmcraft build artifacts 
+*.rock 
+*.charm 
+.rockcraft/ 
+.charmcraft/ 
+parts/ 
+stage/ 
+prime/ 
+
+# IDE & OS 
+.vscode/ 
+.idea/ 
+.DS_Store
