@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Adaptive Form Playground</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 850px; margin: 30px auto; padding: 20px; background: #0f172a; color: #f8fafc; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    .card { background: #1e293b; border: 1px solid #334155; border-radius: 10px; padding: 20px; }
+    h3 { margin-top: 0; color: #38bdf8; font-size: 16px; border-bottom: 1px solid #334155; padding-bottom: 8px; }
+    
+    /* Interactive Signal Chips */
+    .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 15px; }
+    .chip { padding: 6px 12px; border-radius: 20px; font-size: 12px; cursor: pointer; border: 1px solid #475569; background: #0f172a; color: #94a3b8; user-select: none; transition: 0.2s; }
+    .chip.active { background: #0284c7; color: white; border-color: #38bdf8; font-weight: 600; }
+    
+    /* Dynamic Form Preview */
+    .form-preview { background: #ffffff; color: #0f172a; border-radius: 8px; padding: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
+    .form-preview h4 { margin-top: 0; color: #0f172a; font-size: 18px; }
+    .field-group { margin-bottom: 12px; }
+    .field-group label { display: block; font-size: 11px; font-weight: 700; text-transform: uppercase; color: #64748b; margin-bottom: 4px; }
+    .field-group input { width: 100%; padding: 8px 10px; border: 1px solid #cbd5e1; border-radius: 5px; box-sizing: border-box; }
+    .btn-submit { width: 100%; background: #16a34a; color: white; border: 0; padding: 10px; border-radius: 5px; font-weight: 600; cursor: pointer; margin-top: 8px; }
+    .btn-submit:hover { background: #15803d; }
+    
+    /* Controls & Metrics */
+    .btn-row { display: flex; gap: 10px; margin-top: 15px; }
+    .btn-action { flex: 1; padding: 8px 12px; border: 0; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 13px; }
+    .btn-decide { background: #38bdf8; color: #0f172a; }
+    .btn-bounce { background: #ef4444; color: white; }
+    .stats-box { font-family: monospace; font-size: 12px; line-height: 1.6; color: #94a3b8; margin-top: 15px; }
+    .stats-box b { color: #f8fafc; }
+  </style>
+</head>
+<body>
+  <h2>Adaptive Dynamic Form — Interactive Cockpit</h2>
+  
+  <div class="grid">
+    <!-- Left Column: Context Simulator & Actions -->
+    <div class="card">
+      <h3>1. Select Contextual Signals</h3>
+      <p style="font-size: 13px; color: #94a3b8;">Click to toggle visitor attributes. Notice how the bandit changes form fields in response:</p>
+      
+      <div class="chips" id="signals-container">
+        <span class="chip active" onclick="toggleSignal(this, 'page_view')">page_view</span>
+        <span class="chip" onclick="toggleSignal(this, 'mobile')">mobile</span>
+        <span class="chip" onclick="toggleSignal(this, 'returning_visitor')">returning_visitor</span>
+        <span class="chip" onclick="toggleSignal(this, 'enterprise_domain')">enterprise_domain</span>
+        <span class="chip" onclick="toggleSignal(this, 'paid_ad_click')">paid_ad_click</span>
+      </div>
+
+      <div class="btn-row">
+        <button class="btn-action btn-decide" onclick="requestDecision()">Evaluate Bandit (/decide)</button>
+        <button class="btn-action btn-bounce" onclick="submitOutcome(0.0)">Log Bounce (Reward 0.0)</button>
+      </div>
+
+      <div class="stats-box">
+        <h3>Bandit & PostgreSQL State</h3>
+        <b>Site ID:</b> demo-site<br>
+        <b>Active Variant:</b> <span id="metric-variant" style="color: #38bdf8;">-</span><br>
+        <b>Decision Latency:</b> <span id="metric-latency">0 ms</span><br>
+        <b>Total Impressions:</b> <span id="metric-impressions">0</span><br>
+        <b>Total Conversions:</b> <span id="metric-conversions">0</span><br>
+        <b>PostgreSQL Status:</b> <span style="color:#4ade80;">Synchronised</span>
+      </div>
+    </div>
+
+    <!-- Right Column: Live Form Rendering -->
+    <div class="card">
+      <h3>2. Live Generated Form</h3>
+      <div class="form-preview">
+        <h4 id="form-headline">Loading schema...</h4>
+        <div id="form-fields"></div>
+        <button class="btn-submit" id="form-submit-btn" onclick="submitOutcome(1.0)">Submit & Convert (+1.0)</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const siteId = "demo-site";
+    let activeVariant = null;
+    let impressions = 0;
+    let conversions = 0;
+
+    function getActiveSignals() {
+      const activeChips = document.querySelectorAll(".chip.active");
+      return Array.from(activeChips).map(c => c.innerText.trim());
+    }
+
+    function toggleSignal(el, signal) {
+      el.classList.toggle("active");
+      requestDecision(); // Automatically recalculate and morph the form
+    }
+
+    function requestDecision() {
+      const signals = getActiveSignals();
+      const t0 = performance.now();
+
+      fetch(`/sites/${siteId}/decide`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ signals: signals })
+      })
+      .then(res => res.json())
+      .then(data => {
+        const latency = Math.round(performance.now() - t0);
+        document.getElementById("metric-latency").innerText = latency + " ms";
+        
+        activeVariant = data.variant;
+        document.getElementById("metric-variant").innerText = activeVariant;
+        impressions++;
+        document.getElementById("metric-impressions").innerText = impressions;
+
+        renderForm(data.schema);
+      })
+      .catch(err => {
+        document.getElementById("form-headline").innerText = "Error: " + err;
+      });
+    }
+
+    function renderForm(schema) {
+      document.getElementById("form-headline").innerText = schema.headline || "Sign Up";
+      document.getElementById("form-submit-btn").innerText = (schema.button_text || "Submit") + " (+1.0 Reward)";
+      
+      const fieldsDiv = document.getElementById("form-fields");
+      fieldsDiv.innerHTML = "";
+      
+      (schema.fields || ["email"]).forEach(field => {
+        fieldsDiv.innerHTML += `
+          <div class="field-group">
+            <label>${field.replace("_", " ")}</label>
+            <input name="${field}" placeholder="Enter ${field.replace("_", " ")}">
+          </div>
+        `;
+      });
+    }
+
+    function submitOutcome(reward) {
+      if (!activeVariant) return;
+      const signals = getActiveSignals();
+
+      fetch(`/sites/${siteId}/reward`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ variant: activeVariant, reward: reward, signals: signals })
+      })
+      .then(res => res.json())
+      .then(() => {
+        if (reward > 0) {
+          conversions++;
+          document.getElementById("metric-conversions").innerText = conversions;
+        }
+        // Immediately query the bandit again to show the updated selection
+        requestDecision();
+      });
+    }
+
+    // Initial load
+    requestDecision();
+  </script>
+</body>
+</html>

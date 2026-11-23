@@ -1,0 +1,73 @@
+# This file configures Charmcraft.
+# See https://documentation.ubuntu.com/charmcraft/stable/reference/files/charmcraft-yaml-file/ for guidance.
+# For questions or help, visit https://matrix.to/#/#12-factor-charms:ubuntu.com
+
+name: marketing-form-dynamic-optimization
+
+type: charm
+
+base: ubuntu@24.04
+
+# the platforms this charm should be built on and run on.
+# you can check your architecture with `dpkg --print-architecture`
+platforms:
+  amd64:
+# (Required)
+summary: A very short one-line summary of the Flask application.
+
+# (Required)
+description: |
+  A comprehensive overview of your Flask application.
+
+extensions:
+  - flask-framework
+
+requires:
+  postgresql:
+    interface: postgresql_client
+    optional: false
+
+
+config:
+  options:
+    openrouter-api-key:
+      description: "API key for openrouter LLM validation"
+      type: string
+      default: ""
+    openrouter-model:
+      description: "Model identifier to use on OpenRouter (e.g., meta-llama/llama-3-8b-instruct)"
+      type: string
+      default: "meta-llama/llama-3-8b-instruct"
+    enable-llm-validation:
+      description: "Whether to validate bandit form decisions with an LLM before returning them"
+      type: boolean
+      default: false
+    exploration-alpha:
+      description: "Exploration alpha parameter for LinUCB (must be between 0.0 and 1.0)"
+      type: float
+      default: 0.5
+    default-site-schema:
+      description: "Default JSON string mapping signals and form field variants for unconfiged sites"
+      type: string
+      default: '{"signals": ["cta_top", "toggle_annual"], "variants": {"compact": ["email"], "detailed": ["name", "email", "company"]}}'
+    allowed-origins:
+      description: "Allowed origins for CORS headers (e.g., '*' or 'https://canonical.com')"
+      type: string
+      default: "*"
+
+actions: 
+  test-openrouter:
+    description: "Test outbound connectivity and API key validity against OpenRouter"
+    params:
+      prompt:
+        type: string
+        default: "ping"
+        description: "Test prompt to send" 
+
+  reset-bandit-weights: 
+    description: "Reset LinUCB matrices A and b for all sites or a specific site"
+    params:
+      site-id:
+        type: string
+        default: ""
+        description: "Specific site ID to reset, or empty to reset all"
