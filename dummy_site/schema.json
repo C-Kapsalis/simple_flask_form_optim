@@ -1,0 +1,23 @@
+{
+  "signals": ["page_view", "mobile", "returning_visitor", "enterprise_domain", "paid_ad_click"],
+  "variants": {
+    "variant_a_compact": {
+      "headline": "Quick Signup: Start in 30 Seconds",
+      "button_text": "Get Instant Access",
+      "fields": ["email"],
+      "theme": "compact"
+    },
+    "variant_b_detailed": {
+      "headline": "Personalised Marketing Plan",
+      "button_text": "Request Custom Analysis",
+      "fields": ["name", "email", "company_size", "role"],
+      "theme": "enterprise"
+    },
+    "variant_c_social_proof": {
+      "headline": "Join 10,000+ High-Growth Teams",
+      "button_text": "Start Free Trial",
+      "fields": ["work_email", "team_name"],
+      "theme": "social"
+    }
+  }
+}

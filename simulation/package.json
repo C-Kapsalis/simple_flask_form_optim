@@ -1,0 +1,13 @@
+{
+  "name": "adaptive-form-simulation",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Puppeteer-driven synthetic visitors for the adaptive form bandit",
+  "scripts": {
+    "simulate": "node simulate.js"
+  },
+  "dependencies": {
+    "puppeteer": "^25.18.1"
+  }
+}

@@ -24,3 +24,6 @@ prime/
 .vscode/ 
 .idea/ 
 .DS_Store
+# Node / simulation
+node_modules/
+simulation/results/
