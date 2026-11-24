@@ -47,9 +47,12 @@ config:
       type: float
       default: 0.5
     default-site-schema:
-      description: "Default JSON string mapping signals and form field variants for unconfiged sites"
+      description: >-
+        Optional JSON schema ({"signals": [...], "variants": {...}}) used as a fallback for sites
+        that have not registered their own schema. Empty disables the fallback, so each landing
+        page registers its own schema.
       type: string
-      default: '{"signals": ["cta_top", "toggle_annual"], "variants": {"compact": ["email"], "detailed": ["name", "email", "company"]}}'
+      default: ""
     allowed-origins:
       description: "Allowed origins for CORS headers (e.g., '*' or 'https://canonical.com')"
       type: string

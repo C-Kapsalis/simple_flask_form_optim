@@ -6,7 +6,7 @@ name: marketing-form-dynamic-optimization
 # for more information about bases and using 'bare' bases for chiselled rocks
 base: bare # as an alternative, an ubuntu base can be used
 build-base: ubuntu@24.04 # build-base is required when the base is bare
-version: "0.6" # just for humans. Semantic versioning is recommended
+version: "0.7" # just for humans. Semantic versioning is recommended
 summary: A dynamic marketing form optimization tool # 79 char long summary
 description: |
   12-factor Flask microservice implementing DynamicLinUCB contextual multi-armed bandits to

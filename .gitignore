@@ -27,3 +27,5 @@ prime/
 # Node / simulation
 node_modules/
 simulation/results/
+.vercel/
+demo/.run/

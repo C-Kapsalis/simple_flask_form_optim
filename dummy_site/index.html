@@ -3,16 +3,14 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Nimbus Analytics — Marketing insights in minutes</title>
+  <title>Nimbus Analytics — Know which campaigns drive results</title>
   <link rel="stylesheet" href="style.css">
-  <script src="config.js"></script>
 </head>
 <body data-state="loading">
   <header class="nav">
     <div class="logo">◆ Nimbus</div>
     <nav>
       <a href="#features">Features</a>
-      <a href="#pricing">Pricing</a>
       <a href="#signup" class="nav-cta">Get started</a>
     </nav>
   </header>
@@ -21,46 +19,34 @@
     <section class="hero">
       <div class="hero-copy">
         <span class="eyebrow">Marketing analytics</span>
-        <h1>Know which campaigns actually drive revenue.</h1>
-        <p>Nimbus connects your ad spend, CRM and product data so your team can stop guessing
+        <h1>Know which campaigns actually drive results.</h1>
+        <p>Nimbus connects your ad, CRM and product data so your team can stop guessing
           and start scaling the channels that work.</p>
         <ul class="bullets">
           <li>Multi-touch attribution out of the box</li>
           <li>Live dashboards shared across your team</li>
-          <li>SOC 2 Type II, SSO and audit logs</li>
+          <li>Works with the tools you already use</li>
         </ul>
       </div>
 
+      <!-- The adaptive form renders here. -->
       <div class="form-card" id="signup">
-        <div id="form-loading" class="muted">Loading…</div>
-        <form id="lead-form" novalidate hidden>
-          <h2 id="form-headline"></h2>
-          <div id="form-fields"></div>
-          <p id="form-error" class="error" role="alert" hidden></p>
-          <button type="submit" id="form-submit"></button>
-          <p class="fineprint">No credit card required. Cancel anytime.</p>
-        </form>
-        <div id="form-success" hidden>
-          <h2>You're in 🎉</h2>
-          <p>Check your inbox — we've sent you the next steps.</p>
-        </div>
+        <div id="adaptive-form">Loading…</div>
       </div>
     </section>
 
     <section id="features" class="features">
-      <div><h3>Attribution</h3><p>See every touchpoint from first click to closed deal.</p></div>
-      <div><h3>Forecasting</h3><p>Predict pipeline from today's spend with confidence intervals.</p></div>
+      <div><h3>Attribution</h3><p>See every touchpoint from first click to signup.</p></div>
+      <div><h3>Forecasting</h3><p>Project next month's leads from this month's campaigns.</p></div>
       <div><h3>Integrations</h3><p>Google Ads, LinkedIn, HubSpot, Salesforce and 40+ more.</p></div>
-    </section>
-
-    <section id="pricing" class="pricing">
-      <h2>Simple pricing</h2>
-      <p class="muted">Free for teams up to 5. Enterprise plans from $499/month.</p>
     </section>
   </main>
 
-  <footer class="muted">© Nimbus Analytics (demo site for adaptive form testing)</footer>
+  <footer>Nimbus Analytics is a fictional product used to demo adaptive forms.</footer>
 
-  <script src="app.js"></script>
+  <script src="adaptive-form.js"
+          data-api="http://marketing-form"
+          data-site-id="nimbus-landing"
+          data-schema="schema.json"></script>
 </body>
 </html>

@@ -15,7 +15,7 @@
     },
     "variant_c_social_proof": {
       "headline": "Join 10,000+ High-Growth Teams",
-      "button_text": "Start Free Trial",
+      "button_text": "Join Them",
       "fields": ["work_email", "team_name"],
       "theme": "social"
     }

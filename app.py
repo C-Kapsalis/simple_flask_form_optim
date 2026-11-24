@@ -1,12 +1,17 @@
 from mimetypes import init
 import os
 import json
+import logging
+from contextlib import contextmanager
 import numpy as np 
 from flask import Flask, request, jsonify
 from flask import render_template_string
 from prometheus_flask_exporter import PrometheusMetrics
 import requests
 import psycopg2
+from psycopg2.extras import Json
+
+logger = logging.getLogger(__name__)
 
 DB_URI = os.getenv("POSTGRESQL_DB_CONNECT_STRING") or os.getenv("DATABASE_URI")
 
@@ -20,6 +25,8 @@ def init_db():
     conn = get_db()
     if conn:
         with conn.cursor() as cur:
+            # Serialise concurrent CREATEs from several workers/units starting at once.
+            cur.execute("SELECT pg_advisory_xact_lock(7212001)")
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS bandit_state (
                     site_id VARCHAR(128) PRIMARY KEY,
@@ -29,6 +36,37 @@ def init_db():
             """)
         conn.commit()
         conn.close()
+
+
+@contextmanager
+def db_transaction():
+    """Yield a cursor inside a transaction that commits on success and rolls back on error."""
+    conn = get_db()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                yield cur
+    finally:
+        conn.close()
+
+
+def load_site(cur, site_id, for_update=False):
+    query = "SELECT weights_json FROM bandit_state WHERE site_id = %s"
+    cur.execute(query + (" FOR UPDATE" if for_update else ""), (site_id,))
+    row = cur.fetchone()
+    return row[0] if row else None
+
+
+def save_site(cur, site_id, site):
+    cur.execute(
+        """
+        INSERT INTO bandit_state (site_id, weights_json, updated_at)
+        VALUES (%s, %s, CURRENT_TIMESTAMP)
+        ON CONFLICT (site_id)
+        DO UPDATE SET weights_json = EXCLUDED.weights_json, updated_at = CURRENT_TIMESTAMP
+        """,
+        (site_id, Json(site)),
+    )
                                                    
 app = Flask(__name__)
 # reads FLASK_* variables automatically
@@ -155,23 +193,72 @@ def validate_form_with_openrouter(variant_name, fields, context_signals):
             timeout=5
         )
         data = response.json()
-        content = data["choices"]["message"]["content"]
+        content = data["choices"][0]["message"]["content"]
         return {"valid": True, "llm_feedback": content}
     except Exception as err:
         return {"valid": True, "warning": f"LLM validation failed: {str(err)}"}
 
 
-# Initialize bandit with exploration-alpha from Juju config
+# Initialize bandit with exploration-alpha from Juju config.
+# With PostgreSQL configured, the database is the source of truth and `bandit.sites` is unused.
 bandit = DynamicLinUCB(alpha=app.config.get("EXPLORATION_ALPHA", 0.5))
 
-# Initialize default schema if provided in Juju config 
-raw_default_schema = app.config.get("DEFAULT_SITE_SCHEMA")
-if raw_default_schema:
+
+def scoped_bandit(sites):
+    """A bandit over request-local site state, so concurrent requests never share mutable state."""
+    scoped = DynamicLinUCB(alpha=bandit.alpha)
+    scoped.sites = sites
+    return scoped
+
+
+def seed_default_schema():
+    """Register the 'default' fallback site from Juju config, keeping learned weights if unchanged."""
+    raw = app.config.get("DEFAULT_SITE_SCHEMA")
+    if not raw:
+        return
     try:
-        parsed_schema = json.loads(raw_default_schema)
-        bandit.register_site("default", parsed_schema["signals"], parsed_schema['variants'])
-    except Exception:
-        pass 
+        # from_prefixed_env() already JSON-decodes FLASK_DEFAULT_SITE_SCHEMA into a dict.
+        parsed = raw if isinstance(raw, dict) else json.loads(raw)
+        signals, variants = parsed["signals"], parsed["variants"]
+    except Exception as err:
+        logger.warning("Ignoring invalid DEFAULT_SITE_SCHEMA: %s", err)
+        return
+
+    if not DB_URI:
+        bandit.register_site("default", signals, variants)
+        return
+    with db_transaction() as cur:
+        cur.execute("SELECT pg_advisory_xact_lock(7212002)")
+        existing = load_site(cur, "default")
+        if existing and existing["signals"] == signals and existing["variants"] == variants:
+            return
+        fresh = scoped_bandit({})
+        fresh.register_site("default", signals, variants)
+        save_site(cur, "default", fresh.sites["default"])
+
+
+def reset_bandit_state(site_id=""):
+    """Reset A/b matrices (keeping each site's schema) for one site or all. Returns sites reset."""
+    if not DB_URI:
+        targets = [site_id] if site_id else list(bandit.sites)
+        for sid in targets:
+            if sid in bandit.sites:
+                s = bandit.sites[sid]
+                bandit.register_site(sid, s["signals"], s["variants"])
+        return [sid for sid in targets if sid in bandit.sites]
+
+    reset = []
+    with db_transaction() as cur:
+        if site_id:
+            cur.execute("SELECT site_id, weights_json FROM bandit_state WHERE site_id = %s FOR UPDATE", (site_id,))
+        else:
+            cur.execute("SELECT site_id, weights_json FROM bandit_state FOR UPDATE")
+        for sid, site in cur.fetchall():
+            fresh = scoped_bandit({})
+            fresh.register_site(sid, site["signals"], site["variants"])
+            save_site(cur, sid, fresh.sites[sid])
+            reset.append(sid)
+    return reset
 
 @app.after_request
 def add_cors_headers(response):
@@ -198,7 +285,13 @@ def register_schema(site_id):
     if not signals or not variants:
         return jsonify({"error": "signals and variants are required"}), 400
 
-    bandit.register_site(site_id, signals, variants)
+    if DB_URI:
+        scoped = scoped_bandit({})
+        scoped.register_site(site_id, signals, variants)
+        with db_transaction() as cur:
+            save_site(cur, site_id, scoped.sites[site_id])
+    else:
+        bandit.register_site(site_id, signals, variants)
     return jsonify({"message": f"Site {site_id} registered successfully"}), 201
 
 @app.route("/sites/<site_id>/decide", methods=["POST"])
@@ -208,7 +301,12 @@ def decide_form(site_id):
     payload = request.get_json(force=True)
     context_signals = payload.get("signals", [])
 
-    variant_name, fields = bandit.decide(site_id, context_signals)
+    if DB_URI:
+        with db_transaction() as cur:
+            sites = {sid: s for sid in (site_id, "default") if (s := load_site(cur, sid))}
+        variant_name, fields = scoped_bandit(sites).decide(site_id, context_signals)
+    else:
+        variant_name, fields = bandit.decide(site_id, context_signals)
     if variant_name is None:
         return jsonify({"error": fields}), 404
 
@@ -233,7 +331,19 @@ def reward_form(site_id):
     context_signals = payload.get("signals", [])
     reward = payload.get("reward", 1.0)
 
-    success = bandit.update_reward(site_id, variant, context_signals, reward)
+    if DB_URI:
+        with db_transaction() as cur:
+            # Row lock makes read-modify-write safe across workers and Juju units.
+            site = load_site(cur, site_id, for_update=True)
+            target = site_id if site else "default"
+            if not site:
+                site = load_site(cur, "default", for_update=True)
+            scoped = scoped_bandit({target: site} if site else {})
+            success = scoped.update_reward(site_id, variant, context_signals, reward)
+            if success:
+                save_site(cur, target, scoped.sites[target])
+    else:
+        success = bandit.update_reward(site_id, variant, context_signals, reward)
 
     if not success:
         return jsonify({"error": "Could not update bandit reward"}), 400
@@ -244,6 +354,7 @@ def reward_form(site_id):
 
 
 init_db()
+seed_default_schema()
 
 # --- Seed Demo Site Schema ---
 DEMO_SITE_ID = "demo-site"

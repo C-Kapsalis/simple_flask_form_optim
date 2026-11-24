@@ -1,64 +1,45 @@
-# 1. Re-stream your app.py to the pod (in case K8s restarted the container) 
-sudo k8s kubectl exec -i -n marketing-form-dynamic-optimization marketing-form-dynamic-optimization-0 -c flask-app -- python3 -c "import sys; open('/flask/app/app.py', 'w').write(sys.stdin.read())" < ~/marketing-form-dynamic-optimization/app.py 
+# Marketing form dynamic optimization
 
-# 2. Start Flask 
-sudo k8s kubectl exec -n marketing-form-dynamic-optimization marketing-form-dynamic-optimization-0 -c flask-app -- /charm/bin/pebble start flask 
+A Flask service (rock + Juju charm) that picks which lead-form variant to show each landing-page
+visitor. It uses a LinUCB contextual bandit and stores what it learns in PostgreSQL.
 
-# 3. Re-open the port-forward tunnel 
-sudo k8s kubectl port-forward -n marketing-form-dynamic-optimization svc/marketing-form-dynamic-optimization 8080:8000 --address 0.0.0.0
+- **[INSTALL.md](INSTALL.md)**: deploy it with Juju, integrate it with `postgresql-k8s` and an
+  ingress, and add the form to any landing page with one script tag.
+- **[demo/](demo)**: presenter guide plus `start.sh` / `stop.sh`. Everything runs from the
+  `charm-dev` Multipass VM and stays private to this laptop.
+- **[dummy_site/](dummy_site)**: a sample landing page with the embed (`adaptive-form.js`) and
+  `schema.json`.
+- **[simulation/](simulation)**: Puppeteer visitors that exercise a page and API end to end
+  (`node simulate.js --help`).
 
-## Dummy website + Puppeteer user simulation
+## Updating the deployment in `charm-dev`
 
-`dummy_site/` is a static landing page ("Nimbus Analytics") with a real lead form rendered from
-the bandit's decision. `simulation/` drives real Chrome sessions with Puppeteer to imitate visitors.
+The repo is mounted in the VM at `~/marketing-form-dynamic-optimization`. Bump `version` in
+`rockcraft.yaml`, then run in the VM:
 
-**How the site works**
-- It detects visitor signals the way a real site would: `mobile` comes from the UA or viewport,
-  `returning_visitor` from localStorage, `paid_ad_click` from `utm_medium=cpc|ppc|paid`, `gclid` or
-  `fbclid`, and `enterprise_domain` from `utm_campaign` containing `abm` or `enterprise`, or a
-  LinkedIn referrer.
-- It calls `/sites/<id>/decide`. If the site isn't registered yet, it registers
-  `dummy_site/schema.json` first.
-- A valid submit sends reward `1.0`. Leaving the page without converting sends reward `0.0`
-  through `navigator.sendBeacon`.
-- Configure the API in `dummy_site/config.js`, or per visit with `?api=<url>&site=<site_id>`.
-
-**Run locally**
 ```bash
-# 1. API (or use the k8s port-forward on :8080 and pass --api http://localhost:8080)
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-.venv/bin/python app.py                                # http://localhost:8000
-
-# 2. Site
-python3 -m http.server 5173 -d dummy_site              # http://localhost:5173
-
-# 3. Simulated visitors (Node 18+)
-cd simulation && npm install
-node simulate.js --visitors 300 --fast                 # --headful to watch, --help for options
+cd ~/marketing-form-dynamic-optimization
+rockcraft pack
+rockcraft.skopeo --insecure-policy copy --dest-tls-verify=false \
+  oci-archive:marketing-form-dynamic-optimization_<version>_amd64.rock \
+  docker://localhost:32000/marketing-form-dynamic-optimization:<version>
+(cd charm && charmcraft pack)
+juju refresh marketing-form-dynamic-optimization \
+  --path ./charm/marketing-form-dynamic-optimization_amd64.charm \
+  --resource flask-app-image=localhost:32000/marketing-form-dynamic-optimization:<version>
 ```
 
-Each visitor:
-1. Gets a fresh browser context and a random traffic profile (device, UTM params, referrer,
-   prior visit).
-2. Scrolls, reads, and then either fills in and submits the form or leaves the page (sometimes
-   after typing part of a field).
-3. Converts according to a hidden ground-truth model (`TRUTH` in `simulate.js`), so the report
-   can show whether the bandit learns the best variant for each context.
+You no longer need to stream `app.py` into the pod or run `pebble start flask` by hand. Since
+0.7 the charm (built on `paas_charm.flask.Charm`) manages the Flask service, passes `juju config`
+and the PostgreSQL connection to it, and keeps the ingress up to date.
 
-**Report contents**
-- Expected conversion rate of the bandit, compared with a random policy and an oracle.
-- Cumulative regret and a learning curve.
-- The bandit's picks for each segment.
-- Signal-detection checks.
-- A server-side check that the API's Prometheus counters (`/metrics`) received exactly one
-  decision and one reward per visitor.
+`rockcraft pack` copies the whole project directory. Don't create a Python virtualenv inside
+it: the packing fails on the venv's symlinks.
 
-Raw per-visitor results are written to `simulation/results/`. Each run uses a new
-`sim-<timestamp>` site id, so runs start from a clean bandit state. The process exits non-zero if
-any check fails.
+## Running the API locally (without Juju)
 
-**Free hosting on Vercel:** `dummy_site/` is plain static files, so `npx vercel deploy dummy_site`
-works without any config. Real browsers on the Vercel (HTTPS) page need an HTTPS, publicly
-reachable API. Expose the API with a free tunnel (for example `cloudflared tunnel --url
-http://localhost:8000`) and set `apiBase` in `config.js`. Then run
-`node simulate.js --url https://<your-app>.vercel.app/ --api https://<tunnel-url>`.
+```bash
+python3 -m venv ~/.venvs/adaptive-form && ~/.venvs/adaptive-form/bin/pip install -r requirements.txt
+~/.venvs/adaptive-form/bin/python app.py      # http://localhost:8000; state stays in memory unless
+                                              # POSTGRESQL_DB_CONNECT_STRING is set
+```

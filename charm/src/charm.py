@@ -10,21 +10,16 @@ import typing
 import json 
 
 import ops
+import paas_charm.flask
 
 logger = logging.getLogger(__name__)
 
-from charms.data_platform_libs.v0.data_interfaces import DatabaseRequires
 
-class MarketingFormDynamicOptimizationCharm(ops.CharmBase):
+class MarketingFormDynamicOptimizationCharm(paas_charm.flask.Charm):
+    # paas_charm wires the `postgresql` and `ingress` integrations and passes config to the
+    # workload as FLASK_* environment variables (and POSTGRESQL_DB_CONNECT_STRING).
     def __init__(self, framework: ops.Framework) -> None:
         super().__init__(framework)
-
-        # Bind to PostgreSQL relation
-        self.database = DatabaseRequires(
-            self, 
-            relation_name="postgresql",
-            database_name="marketing_form_bandit"
-        )
 
         # observe config changes and status collection
         # self.framework.observe(self.on.config_changed, self._on_config_changed) # handled automatically as part of the flask extension implementation
@@ -33,6 +28,7 @@ class MarketingFormDynamicOptimizationCharm(ops.CharmBase):
 
         # action observers
         self.framework.observe(self.on.test_openrouter_action, self._on_test_openrouter_action)
+        self.framework.observe(self.on.reset_bandit_weights_action, self._on_reset_bandit_weights_action)
 
 
     def _on_start(self, event: ops.StartEvent) -> None:
@@ -80,7 +76,9 @@ class MarketingFormDynamicOptimizationCharm(ops.CharmBase):
                 event.add_status(ops.BlockedStatus("default-site-schema contains invalid JSON"))
                 return 
 
-        event.add_status(ops.ActiveStatus("Bandit service operational"))
+        # Only relabel "active"; keep paas_charm's waiting/blocked statuses (e.g. missing integrations).
+        if isinstance(self.unit.status, ops.ActiveStatus):
+            event.add_status(ops.ActiveStatus("Bandit service operational"))
 
 
 
@@ -116,7 +114,8 @@ class MarketingFormDynamicOptimizationCharm(ops.CharmBase):
                 event.add_status(ops.BlockedStatus("default-site-schema contains invalid JSON"))
                 return
 
-        event.add_status(ops.ActiveStatus("Bandit service operational"))
+        if isinstance(self.app.status, ops.ActiveStatus):
+            event.add_status(ops.ActiveStatus("Bandit service operational"))
 
 
 
@@ -162,6 +161,38 @@ class MarketingFormDynamicOptimizationCharm(ops.CharmBase):
         except Exception as e: 
             event.fail(f"Execution error: {str(e)}")
             
+
+
+    def _on_reset_bandit_weights_action(self, event: ops.ActionEvent) -> None:
+        """Reset the LinUCB matrices for one site (or all), keeping each site's schema."""
+        site_id = event.params.get("site-id", "")
+        container = self.unit.get_container("flask-app")
+        if not container.can_connect():
+            event.fail("Workload container is not reachable")
+            return
+        flask_service = container.get_plan().services.get("flask")
+        if flask_service is None:
+            event.fail("Flask service is not configured yet")
+            return
+        # Run inside the workload with the same environment (DB connection string, config) as Flask.
+        script = "import json, sys, app; print(json.dumps(app.reset_bandit_state(sys.argv[1])))"
+        try:
+            process = container.exec(
+                ["/bin/python3", "-c", script, site_id],
+                working_dir="/flask/app",
+                environment=dict(flask_service.environment),
+                user="_daemon_",
+                timeout=60,
+            )
+            stdout, _ = process.wait_output()
+            reset_sites = json.loads(stdout.strip().splitlines()[-1])
+        except Exception as e:
+            event.fail(f"Reset failed: {e}")
+            return
+        if site_id and not reset_sites:
+            event.fail(f"Unknown site-id: {site_id}")
+            return
+        event.set_results({"reset-sites": ",".join(reset_sites) or "(none)", "count": len(reset_sites)})
 
 
 if __name__ == "__main__":

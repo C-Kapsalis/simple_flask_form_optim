@@ -24,6 +24,7 @@ function parseArgs(argv) {
     headful: false,
     fast: false,
     out: path.join(HERE, "results"),
+    schema: path.join(HERE, "..", "dummy_site", "schema.json"),
   };
   for (let i = 0; i < argv.length; i++) {
     const [k, inline] = argv[i].replace(/^--/, "").split("=");
@@ -37,7 +38,9 @@ function parseArgs(argv) {
       case "seed": opts.seed = parseInt(next(), 10); break;
       case "headful": opts.headful = true; break;
       case "fast": opts.fast = true; break;
+      case "keep-state": opts.keepState = true; break;
       case "out": opts.out = next(); break;
+      case "schema": opts.schema = next(); break;
       case "help":
         console.log(`Usage: node simulate.js [options]
   --url <url>          Dummy site URL (default ${opts.url})
@@ -48,6 +51,8 @@ function parseArgs(argv) {
   --seed <n>           RNG seed for reproducible traffic (default ${opts.seed})
   --headful            Show the browser windows
   --fast               Skip human-like think/typing delays
+  --keep-state         Don't re-register an existing --site-id (keeps what it has learned)
+  --schema <path|url>  Form schema to register (default ../dummy_site/schema.json)
   --out <dir>          Where to write JSON/CSV results`);
         process.exit(0);
       default:
@@ -71,12 +76,39 @@ function mulberry32(seed) {
 const TRAFFIC = { mobile: 0.4, returning_visitor: 0.3, enterprise_domain: 0.2, paid_ad_click: 0.35 };
 
 // Hidden conversion model the bandit must discover: p = base + sum(signal effects), clamped.
-const TRUTH = {
+// Hand-tuned for the sample schema; other variants get a synthetic model derived from their name.
+const KNOWN_TRUTH = {
   variant_a_compact: { base: 0.22, mobile: 0.2, paid_ad_click: 0.1, enterprise_domain: -0.15, returning_visitor: 0.0 },
   variant_b_detailed: { base: 0.06, mobile: -0.04, paid_ad_click: -0.02, enterprise_domain: 0.4, returning_visitor: 0.08 },
   variant_c_social_proof: { base: 0.15, mobile: 0.0, paid_ad_click: 0.05, enterprise_domain: 0.05, returning_visitor: 0.2 },
 };
-const VARIANTS = Object.keys(TRUTH);
+let TRUTH = {};
+let VARIANTS = [];
+
+function buildTruth(variantNames) {
+  TRUTH = {};
+  for (const v of variantNames) {
+    if (KNOWN_TRUTH[v]) {
+      TRUTH[v] = KNOWN_TRUTH[v];
+      continue;
+    }
+    let h = 0;
+    for (const c of v) h = (Math.imul(h, 31) + c.charCodeAt(0)) | 0;
+    const r = mulberry32(h);
+    TRUTH[v] = { base: 0.05 + r() * 0.2 };
+    for (const s of Object.keys(TRAFFIC)) TRUTH[v][s] = (r() - 0.5) * 0.3;
+  }
+  VARIANTS = variantNames;
+}
+
+async function loadSchema(src) {
+  const text = /^https?:\/\//.test(src) ? await (await fetch(src)).text() : fs.readFileSync(src, "utf8");
+  const schema = JSON.parse(text);
+  if (!schema.signals?.length || !Object.keys(schema.variants || {}).length) {
+    throw new Error(`Schema ${src} needs non-empty "signals" and "variants"`);
+  }
+  return schema;
+}
 
 function convProb(variant, signals) {
   const t = TRUTH[variant];
@@ -168,7 +200,10 @@ async function runVisitor(browser, profile, opts) {
     if (profile.mobile) await page.emulate(KnownDevices["iPhone 13"]);
     else await page.setViewport({ width: 1366, height: 860 });
     if (profile.returning_visitor) {
-      await page.evaluateOnNewDocument(() => localStorage.setItem("nimbus_visited", String(Date.now() - 86400000)));
+      await page.evaluateOnNewDocument(
+        (key) => localStorage.setItem(key, String(Date.now() - 86400000)),
+        `af_visited_${opts.siteId}`
+      );
     }
 
     await page.goto(buildUrl(opts.url, profile, opts), {
@@ -188,15 +223,15 @@ async function runVisitor(browser, profile, opts) {
     await think(300, 1200);
     await page.mouse.wheel({ deltaY: 300 + rng() * 600 });
     await think(200, 900);
-    await page.evaluate(() => document.getElementById("signup").scrollIntoView({ block: "center" }));
+    await page.evaluate(() => document.querySelector(".af-form").scrollIntoView({ block: "center" }));
     await think(200, 800);
 
     rec.intended_convert = rng() < convProb(st.variant, st.signals);
-    const fields = await page.$$eval("#form-fields [name]", (els) => els.map((e) => ({ name: e.name, tag: e.tagName })));
+    const fields = await page.$$eval(".af-form [name]", (els) => els.map((e) => ({ name: e.name, tag: e.tagName })));
 
     if (rec.intended_convert) {
       for (const f of fields) {
-        const sel = `#form-fields [name="${f.name}"]`;
+        const sel = `.af-form [name="${f.name}"]`;
         if (f.tag === "SELECT") {
           const options = await page.$$eval(`${sel} option`, (os) => os.map((o) => o.value).filter(Boolean));
           await page.select(sel, pick(rng, options));
@@ -206,14 +241,14 @@ async function runVisitor(browser, profile, opts) {
         }
         await think(150, 600);
       }
-      await page.click("#form-submit");
+      await page.click(".af-submit");
       await page.waitForFunction(() => document.body.dataset.state === "converted", { timeout: 10000 });
       rec.converted = true;
       rec.reward_acked = true; // the page only shows success after the API accepted the reward
     } else {
       // Some visitors start typing, then abandon.
       if (fields.length && rng() < 0.3 && fields[0].tag !== "SELECT") {
-        const sel = `#form-fields [name="${fields[0].name}"]`;
+        const sel = `.af-form [name="${fields[0].name}"]`;
         await page.click(sel);
         await page.type(sel, fakeValue(rng, fields[0].name, profile).slice(0, 5), { delay: opts.fast ? 0 : 40 });
         await think(300, 1000);
@@ -221,7 +256,7 @@ async function runVisitor(browser, profile, opts) {
       // Leaving the page fires `pagehide` -> sendBeacon(reward 0). Puppeteer can't see the
       // beacon's response after unload, so delivery is verified server-side via /metrics.
       await page.goto("about:blank");
-      await sleep(250);
+      await sleep(1500); // give the beacon time to leave before the context is closed
     }
   } catch (err) {
     rec.error = String(err.message || err).split("\n")[0];
@@ -253,7 +288,8 @@ function report(records, opts, server) {
   const ok = records.filter((r) => !r.error);
   const errors = records.filter((r) => r.error);
   const mismatched = ok.filter((r) => r.detected_signals !== r.expected_signals);
-  const serverOk = !server || (server.decisions === ok.length && server.rewards === ok.length);
+  const serverOk =
+    !server || (server.decisions === ok.length + (opts.extraDecisions || 0) && server.rewards === ok.length);
 
   console.log("\n================ SIMULATION REPORT ================");
   console.log(`Site id: ${opts.siteId}   Visitors: ${records.length}   Errors: ${errors.length}`);
@@ -344,12 +380,29 @@ async function main() {
     }
   }
 
+  const schema = await loadSchema(opts.schema);
+  buildTruth(Object.keys(schema.variants));
+
   // Register up front: concurrent first visitors would otherwise each (re-)register and reset the bandit.
-  const schemaRes = await fetch(`${opts.api}/sites/${opts.siteId}/schema`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: fs.readFileSync(path.join(HERE, "..", "dummy_site", "schema.json")),
-  });
+  // With --keep-state an existing site keeps what it has learned (probing costs one extra decision).
+  let register = true;
+  if (opts.keepState) {
+    const probe = await fetch(`${opts.api}/sites/${opts.siteId}/decide`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ signals: [] }),
+    });
+    opts.extraDecisions = 1;
+    register = probe.status === 404;
+    console.log(register ? `Site ${opts.siteId} is new; registering it.` : `Reusing learned state of site ${opts.siteId}.`);
+  }
+  const schemaRes = register
+    ? await fetch(`${opts.api}/sites/${opts.siteId}/schema`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(schema),
+      })
+    : { ok: true };
   if (!schemaRes.ok) throw new Error(`Schema registration failed: HTTP ${schemaRes.status}`);
 
   const rng = mulberry32(opts.seed);
@@ -378,7 +431,7 @@ async function main() {
   } finally {
     await browser.close();
   }
-  await sleep(500); // let trailing beacons land
+  await sleep(3000); // let trailing beacons land
   process.exit(report(records, opts, await serverCounters(opts)) ? 0 : 1);
 }
 
